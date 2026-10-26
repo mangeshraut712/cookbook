@@ -52,11 +52,37 @@ Use Cases:
 3. Running dry-run audits to inspect which notebooks would be affected by a model migration.
 """
 
+import io
 import re
-from typing import Optional, Tuple
+import tokenize
+from typing import List, Optional, Tuple
 import nbformat
 
 from .logger import logger
+
+
+
+def _source_offset(source: str, position: Tuple[int, int]) -> int:
+    """Convert a 1-based (line, column) tokenize position into a byte offset."""
+    line, column = position
+    if line < 1:
+        return 0
+    lines = source.splitlines(keepends=True)
+    return sum(len(lines[i]) for i in range(line - 1)) + column
+
+
+def _string_literal_spans(source: str) -> List[Tuple[int, int]]:
+    """Return [start, end) character spans of Python string literals in source."""
+    spans: List[Tuple[int, int]] = []
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        for tok in tokens:
+            if tok.type == tokenize.STRING:
+                spans.append((_source_offset(source, tok.start), _source_offset(source, tok.end)))
+    except (tokenize.TokenError, IndentationError):
+        # Incomplete notebook cells still yield earlier STRING tokens; keep those.
+        pass
+    return spans
 
 
 class ModelOverrideTransformer:
@@ -152,9 +178,14 @@ class ModelOverrideTransformer:
             return source, 0
 
         replacements = 0
+        string_spans = _string_literal_spans(source)
 
         def _replace_match(match: re.Match) -> str:
             nonlocal replacements
+            # Skip assignment-like text that only appears inside string literals
+            # or docstrings (e.g. example MODEL_ID lines in a prompt).
+            if any(start <= match.start() < end for start, end in string_spans):
+                return match.group(0)
             prefix = match.group(1)
             current_model = match.group(2) or match.group(3) or ""
             suffix = match.group(4)

@@ -294,11 +294,24 @@ class OutputComparator:
                 is_regression=False
             )
 
-        # Check for numeric token count or integer drift within 25%
-        old_digits = re.findall(r"\b\d+\b", old_clean)
-        new_digits = re.findall(r"\b\d+\b", new_clean)
-        if old_digits and new_digits and len(old_digits) == len(new_digits):
-            differences = [abs(int(a) - int(b)) / (int(a) or 1) for a, b in zip(old_digits, new_digits)]
+        # Numeric drift is only acceptable when the non-numeric skeleton matches
+        # and signed integer tokens stay aligned (so "PASS"→"FAIL" or sign flips
+        # are regressions, not "slight variation").
+        number_re = re.compile(r"(?<![\w.])-?\d+\b")
+        old_skeleton = number_re.sub("#", old_clean)
+        new_skeleton = number_re.sub("#", new_clean)
+        old_digits = number_re.findall(old_clean)
+        new_digits = number_re.findall(new_clean)
+        if (
+            old_skeleton == new_skeleton
+            and old_digits
+            and new_digits
+            and len(old_digits) == len(new_digits)
+        ):
+            differences = [
+                abs(int(a) - int(b)) / (abs(int(a)) or 1)
+                for a, b in zip(old_digits, new_digits)
+            ]
             if max(differences) <= 0.35:
                 return CellComparisonReport(
                     cell_index=cell_index,
